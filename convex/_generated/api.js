@@ -15,7 +15,7 @@ import { anyApi } from "convex/server";
  *
  * Usage:
  * ```js
- * const myFunctionReference = api.myModule.myFunction;
+ * const myFunction = useQuery(api.myModule.myFunction);
  * ```
  */
 export const api = anyApi;
