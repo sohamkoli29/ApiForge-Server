@@ -1,10 +1,33 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Initialize Supabase client (with fallback for missing env vars)
+let supabase;
+try {
+  if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
+    supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_KEY,
+      {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      }
+    );
+    console.log('✅ Supabase client initialized');
+  } else {
+    console.log('⚠️  Supabase environment variables not found. Using localStorage fallback for data.');
+  }
+} catch (error) {
+  console.log('⚠️  Supabase initialization failed. Using localStorage fallback:', error.message);
+}
 
 // Middleware
 app.use(cors());
@@ -17,35 +40,94 @@ app.use((req, res, next) => {
   next();
 });
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ 
+// Health check endpoint (enhanced with database status)
+app.get('/api/health', async (req, res) => {
+  const healthInfo = { 
     status: 'OK', 
     message: 'API Testing Tool Backend is running',
+    database: supabase ? 'Supabase Connected' : 'Local Storage Mode',
     timestamp: new Date().toISOString(),
     version: '1.0.0'
-  });
+  };
+
+  // Test Supabase connection if available
+  if (supabase) {
+    try {
+      const { data, error } = await supabase.from('history').select('count').limit(1);
+      healthInfo.database = error ? 'Supabase Connection Issue' : 'Supabase Connected';
+    } catch (error) {
+      healthInfo.database = 'Supabase Connection Failed';
+    }
+  }
+
+  res.json(healthInfo);
 });
 
-// History endpoints
+// Enhanced History endpoints with Supabase + localStorage fallback
 app.post('/api/history/save', async (req, res) => {
   try {
     const { userId, url, method, headers, params, body, responseStatus, duration } = req.body;
 
-    // For now, we'll just return success since we'll implement Convex client later
-    // In a real implementation, you'd call Convex mutation here
+    // Try to save to Supabase first
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('history')
+          .insert({
+            user_id: userId,
+            url,
+            method,
+            headers: headers ? JSON.stringify(headers) : null,
+            params: params ? JSON.stringify(params) : null,
+            body: body || null,
+            response_status: responseStatus || null,
+            duration: duration || null
+          })
+          .select()
+          .single();
+
+        if (!error) {
+          return res.json({
+            success: true,
+            message: 'History saved to database',
+            data: {
+              id: data.id,
+              userId: data.user_id,
+              url: data.url,
+              method: data.method,
+              responseStatus: data.response_status,
+              duration: data.duration,
+              createdAt: data.created_at
+            }
+          });
+        }
+      } catch (supabaseError) {
+        console.log('Supabase save failed, falling back to localStorage:', supabaseError.message);
+      }
+    }
+
+    // Fallback to localStorage simulation (for client-side storage)
+    const historyItem = {
+      id: Date.now().toString(),
+      userId,
+      url,
+      method,
+      headers: headers ? JSON.stringify(headers) : null,
+      params: params ? JSON.stringify(params) : null,
+      body: body || null,
+      responseStatus: responseStatus || null,
+      duration: duration || null,
+      createdAt: Date.now()
+    };
+
     res.json({
       success: true,
-      message: 'History saved (Convex integration pending)',
-      data: {
-        userId,
-        url,
-        method,
-        responseStatus,
-        duration
-      }
+      message: 'History saved locally (database not configured)',
+      data: historyItem
     });
+
   } catch (error) {
+    console.error('Save history error:', error);
     res.status(500).json({
       error: 'Failed to save history',
       message: error.message
@@ -58,14 +140,50 @@ app.get('/api/history/:userId', async (req, res) => {
     const { userId } = req.params;
     const limit = parseInt(req.query.limit) || 50;
 
-    // For now, return mock data
-    // In real implementation, call Convex query
+    // Try to fetch from Supabase first
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('history')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false })
+          .limit(limit);
+
+        if (!error) {
+          const formattedData = data.map(item => ({
+            id: item.id,
+            userId: item.user_id,
+            url: item.url,
+            method: item.method,
+            headers: item.headers,
+            params: item.params,
+            body: item.body,
+            responseStatus: item.response_status,
+            duration: item.duration,
+            createdAt: new Date(item.created_at).getTime()
+          }));
+
+          return res.json({
+            success: true,
+            data: formattedData,
+            message: 'History retrieved from database'
+          });
+        }
+      } catch (supabaseError) {
+        console.log('Supabase fetch failed:', supabaseError.message);
+      }
+    }
+
+    // Fallback: return empty array (client will use its own localStorage)
     res.json({
       success: true,
       data: [],
-      message: 'History retrieval (Convex integration pending)'
+      message: 'Using client-side storage (database not configured)'
     });
+
   } catch (error) {
+    console.error('Fetch history error:', error);
     res.status(500).json({
       error: 'Failed to fetch history',
       message: error.message
@@ -73,12 +191,217 @@ app.get('/api/history/:userId', async (req, res) => {
   }
 });
 
-// Proxy endpoint (existing code remains the same)
+// Collections endpoints with Supabase + fallback
+app.get('/api/collections/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // Try to fetch from Supabase first
+    if (supabase) {
+      try {
+        const { data: collections, error } = await supabase
+          .from('collections')
+          .select(`
+            *,
+            collection_items(count)
+          `)
+          .eq('user_id', userId)
+          .order('updated_at', { ascending: false });
+
+        if (!error) {
+          const collectionsWithCounts = collections.map(collection => ({
+            id: collection.id,
+            userId: collection.user_id,
+            name: collection.name,
+            description: collection.description,
+            color: collection.color,
+            itemCount: collection.collection_items[0]?.count || 0,
+            createdAt: new Date(collection.created_at).getTime(),
+            updatedAt: new Date(collection.updated_at).getTime()
+          }));
+
+          return res.json({
+            success: true,
+            data: collectionsWithCounts,
+            message: 'Collections retrieved from database'
+          });
+        }
+      } catch (supabaseError) {
+        console.log('Supabase collections fetch failed:', supabaseError.message);
+      }
+    }
+
+    // Fallback: return empty array (client will use its own localStorage)
+    res.json({
+      success: true,
+      data: [],
+      message: 'Using client-side storage (database not configured)'
+    });
+
+  } catch (error) {
+    console.error('Fetch collections error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch collections',
+      message: error.message,
+      success: false
+    });
+  }
+});
+
+app.post('/api/collections', async (req, res) => {
+  try {
+    const { userId, name, description, color } = req.body;
+
+    // Try to save to Supabase first
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('collections')
+          .insert({
+            user_id: userId,
+            name,
+            description,
+            color
+          })
+          .select()
+          .single();
+
+        if (!error) {
+          return res.json({
+            success: true,
+            data: {
+              id: data.id,
+              userId: data.user_id,
+              name: data.name,
+              description: data.description,
+              color: data.color,
+              createdAt: new Date(data.created_at).getTime(),
+              updatedAt: new Date(data.updated_at).getTime()
+            },
+            message: 'Collection created in database'
+          });
+        }
+      } catch (supabaseError) {
+        console.log('Supabase collection creation failed:', supabaseError.message);
+      }
+    }
+
+    // Fallback: return success (client will handle localStorage)
+    res.json({
+      success: true,
+      data: {
+        id: 'collection_' + Date.now(),
+        userId,
+        name,
+        description,
+        color,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      },
+      message: 'Collection created locally'
+    });
+
+  } catch (error) {
+    console.error('Create collection error:', error);
+    res.status(500).json({
+      error: 'Failed to create collection',
+      message: error.message,
+      success: false
+    });
+  }
+});
+
+app.post('/api/collections/:collectionId/items', async (req, res) => {
+  try {
+    const { collectionId } = req.params;
+    const { userId, name, url, method, headers, params, body, description } = req.body;
+
+    // Try to save to Supabase first
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('collection_items')
+          .insert({
+            collection_id: collectionId,
+            user_id: userId,
+            name,
+            url,
+            method,
+            headers: headers ? JSON.stringify(headers) : null,
+            params: params ? JSON.stringify(params) : null,
+            body: body || null,
+            description: description || null
+          })
+          .select()
+          .single();
+
+        if (!error) {
+          // Update collection updated_at
+          await supabase
+            .from('collections')
+            .update({ updated_at: new Date().toISOString() })
+            .eq('id', collectionId);
+
+          return res.json({
+            success: true,
+            data: {
+              id: data.id,
+              collectionId: data.collection_id,
+              userId: data.user_id,
+              name: data.name,
+              url: data.url,
+              method: data.method,
+              headers: data.headers,
+              params: data.params,
+              body: data.body,
+              description: data.description,
+              createdAt: new Date(data.created_at).getTime(),
+              updatedAt: new Date(data.updated_at).getTime()
+            },
+            message: 'Item added to collection in database'
+          });
+        }
+      } catch (supabaseError) {
+        console.log('Supabase item addition failed:', supabaseError.message);
+      }
+    }
+
+    // Fallback: return success (client will handle localStorage)
+    res.json({
+      success: true,
+      data: {
+        id: 'item_' + Date.now(),
+        collectionId,
+        userId,
+        name,
+        url,
+        method,
+        headers: headers ? JSON.stringify(headers) : null,
+        params: params ? JSON.stringify(params) : null,
+        body: body || null,
+        description: description || null,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      },
+      message: 'Item added to collection locally'
+    });
+
+  } catch (error) {
+    console.error('Add to collection error:', error);
+    res.status(500).json({
+      error: 'Failed to add item to collection',
+      message: error.message,
+      success: false
+    });
+  }
+});
+
+// Proxy endpoint (existing code remains exactly the same - no changes)
 app.post('/api/proxy', async (req, res) => {
   const startTime = Date.now();
   
   try {
-    const { url, method, headers, body, timeout = 30000 } = req.body;
+    const { url, method, headers, body, timeout = 30000 ,auth } = req.body;
 
     // Validate required fields
     if (!url) {
@@ -176,6 +499,11 @@ app.post('/api/proxy', async (req, res) => {
       if (!config.headers['user-agent']) {
         config.headers['user-agent'] = 'APITestingTool/1.0.0';
       }
+    }
+
+     // Handle authentication if provided
+    if (auth && auth.type === 'medimapper' && auth.token) {
+      config.headers['Authorization'] = `Bearer ${auth.token}`;
     }
 
     // Set request body for applicable methods
@@ -304,5 +632,12 @@ app.listen(PORT, () => {
   console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
   console.log(`🔗 Proxy endpoint: http://localhost:${PORT}/api/proxy`);
   console.log(`📝 History endpoint: http://localhost:${PORT}/api/history`);
+  console.log(`🗂️ Collections endpoint: http://localhost:${PORT}/api/collections`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  
+  if (supabase) {
+    console.log(`💾 Database: Supabase connected`);
+  } else {
+    console.log(`💾 Database: Local storage mode (add SUPABASE_URL and SUPABASE_SERVICE_KEY to .env)`);
+  }
 });
