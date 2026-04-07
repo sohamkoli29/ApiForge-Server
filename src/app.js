@@ -3,7 +3,7 @@ const cors = require('cors');
 require('dotenv').config();
 
 // Route imports
-const healthRoutes = require('./routes/health');
+
 const historyRoutes = require('./routes/history');
 const collectionsRoutes = require('./routes/collections');
 const proxyRoutes = require('./routes/proxy');
@@ -30,7 +30,15 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(requestLogger);
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
-app.use('/api/health', healthRoutes);
+// Health check — keep Render + Supabase alive
+app.get('/api/health', async (req, res) => {
+  try {
+    await supabase.from('test').select('message').limit(1).single();
+    res.status(200).json({ alive: true, db: 'connected' });
+  } catch (err) {
+    res.status(200).json({ alive: true, db: 'error' });
+  }
+});
 app.use('/api/history', historyRoutes);
 app.use('/api/collections', collectionsRoutes);
 app.use('/api/proxy', proxyRoutes);
