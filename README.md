@@ -76,33 +76,8 @@ The server will be running on the port specified in your `.env` file (e.g., `htt
 
 All endpoints are prefixed with `/api`.
 
-### Health Check
 
-*   `GET /api/health`
-    *   Checks the server status and database connectivity.
-    *   **Response:**
-        ```json
-        {
-          "alive": true,
-          "db": "connected"
-        }
-        ```
 
-### Proxy
-
-*   `POST /api/proxy`
-    *   Forwards an API request to the specified URL.
-    *   **Request Body:**
-        ```json
-        {
-          "url": "https://api.example.com/data",
-          "method": "GET",
-          "headers": { "Authorization": "Bearer ..." },
-          "body": { "key": "value" },
-          "timeout": 30000
-        }
-        ```
-    *   **Response:** The response from the target server, wrapped with metadata like status, duration, and size.
 
 ### History
 
